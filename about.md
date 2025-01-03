@@ -74,11 +74,14 @@ volume surpassing $100k.
 - Mentored and aided developers across diverse projects, facilitating the seamless integration of the blockchain into multiple
 successful ventures.
 
+---
+
 ## Education
 
 **Bachelor of Computer Science**  
 UNIVERSITY OF WOLVERHAMPTON | Feb 2024
 
+---
 
 ## Awards and Certificates
 
