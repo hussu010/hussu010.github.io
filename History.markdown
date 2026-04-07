@@ -113,6 +113,7 @@
   * Restore the functionality of Disqus (#902)
   * Pins font awesome font to version 7 and use it in the stylesheets (#908)
   * Align nav-items on small screen devices (#912)
+  * Fix typo in comment about upstream changes (#924)
 
 ### Development Fixes
 
