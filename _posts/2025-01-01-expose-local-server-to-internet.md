@@ -10,7 +10,7 @@ Set up your raspberry pi/ old laptop/ pc as a server and expose it to the intern
 
 Many of my personal and work projects require dedicated development and testing environments. We often containerize these projects and deploy them on EC2 instances. However, as our EC2 bills started to grow, we decided to take a cost-effective approach by migrating some of these projects to our on-premises server.
 
-In this post, I'll walk you through how we're leveraging a Raspberry Pi as a server and securely exposing it to the internet for SSH access using [FRP](https://github.com/fatedier/frp) — a fast reverse proxy. The relay server costs as little as ~$3/month (e.g., an AWS `t4g.nano`), far cheaper than running a full EC2 dev instance.
+In this post, I'll walk you through how we're leveraging a Raspberry Pi as a server and exposing it to the internet for SSH access using [FRP](https://github.com/fatedier/frp) — a fast reverse proxy. The relay server costs as little as ~$3/month (e.g., an AWS `t4g.nano`), far cheaper than running a full EC2 dev instance.
 
 ## Prerequisites
 
@@ -19,184 +19,174 @@ In this post, I'll walk you through how we're leveraging a Raspberry Pi as a ser
 
 ## Step 1: Spin up a Relay Server
 
-First, we need to set up a relay server that will act as a bridge between our Raspberry Pi and the internet. This server will be responsible for forwarding traffic to and from the Raspberry Pi. You can use any cloud provider to spin up this server. In this example, we'll use an AWS EC2 instance.
+First, we need to set up a relay server that will act as a bridge between our Raspberry Pi and the internet. You can use any cloud provider. In this example, we'll use an AWS EC2 instance.
 
-1.  Launch an EC2 instance with Ubuntu 20.04 AMI.
-2.  Assign an Elastic IP to the EC2 instance to ensure a static IP address.
-3.  SSH into the EC2 instance and install the FRP server.
+1. Launch an EC2 instance with Ubuntu 20.04 AMI.
+2. Assign an Elastic IP to ensure a static IP address.
+3. SSH into the EC2 instance and install the FRP server.
 
-        ```bash
+```bash
+sudo apt update
+sudo apt install wget unzip openssh-server -y
+wget https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_amd64.tar.gz
+tar -xvf frp_0.61.1_linux_amd64.tar.gz
+cd frp_0.61.1_linux_amd64
+sudo cp frps /usr/local/bin
+cd
+sudo rm -rf frp_0.61.1_linux_amd64
+sudo rm frp_0.61.1_linux_amd64.tar.gz
+```
 
-    sudo apt update
-    sudo apt install wget unzip openssh-server -y
-    wget https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_amd64.tar.gz
-    tar -xvf frp_0.61.1_linux_amd64.tar.gz
-    cd frp_0.61.1_linux_amd64
-    sudo cp frps /usr/local/bin
-    cd
-    sudo rm -rf frp_0.61.1_linux_amd64
-    sudo rm frp_0.61.1_linux_amd64.tar.gz
-    ```
+4. Create a configuration file for the FRP server.
 
-4.  Create a configuration file for the FRP server.
+```bash
+sudo mkdir -p /etc/frp
+sudo nano /etc/frp/frps.toml
+```
 
-        ```bash
+5. Add the following configuration to the file.
 
-    sudo mkdir -p /etc/frp
-    sudo nano /etc/frp/frps.toml
-    ```
+```toml
+bindPort = 7000
+auth.token = "your-secret-token"
+```
 
-5.  Add the following configuration to the file.
+> **Important:** Set `auth.token` to a strong secret. Any client that knows this token can tunnel through your relay server.
 
-        ```toml
+6. Open ports 6000 and 7000 on the relay server before starting FRP. Update the security group in the AWS console:
+   - Type: Custom TCP Rule, Protocol: TCP, Port Range: 6000, Source: `0.0.0.0/0` (or restrict to your IP)
+   - Type: Custom TCP Rule, Protocol: TCP, Port Range: 7000, Source: `0.0.0.0/0` (or restrict to Raspberry Pi's IP)
 
-    bindPort = 7000
-    auth.token = "your-secret-token"
-    ```
+   ![Inbound Security Rules](/assets/images/inbound-security-rules.png)
+   _Inbound Security Rules_
 
-    > **Important:** Set `auth.token` to a strong secret. Any client that knows this token can tunnel through your relay server.
+   If you're using UFW on the relay server, also run:
 
-6.  Open ports 6000 and 7000 on the relay server before starting FRP. Update the security group in the AWS console:
-    - Type: Custom TCP Rule, Protocol: TCP, Port Range: 6000, Source: `0.0.0.0/0` (or restrict to your IP)
-    - Type: Custom TCP Rule, Protocol: TCP, Port Range: 7000, Source: `0.0.0.0/0` (or restrict to Raspberry Pi's IP)
+```bash
+sudo ufw allow 6000/tcp
+sudo ufw allow 7000/tcp
+```
 
-    ![Inbound Security Rules](/assets/images/inbound-security-rules.png)
-    _Inbound Security Rules_
+7. Start the FRP server.
 
-    If you're using UFW on the relay server, also run:
+```bash
+frps -c /etc/frp/frps.toml
+```
 
-        ```bash
+8. Set up FRP server as a systemd service so it starts automatically on reboot.
 
-    sudo ufw allow 6000/tcp
-    sudo ufw allow 7000/tcp
-    ```
+```bash
+sudo nano /etc/systemd/system/frps.service
+```
 
-7.  Start the FRP server.
+Add the following:
 
-        ```bash
+```ini
+[Unit]
+Description=FRP Server
+After=network.target
 
-    frps -c /etc/frp/frps.toml
-    ```
+[Service]
+ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
+Restart=always
 
-8.  Set up FRP server as a systemd service so it starts automatically on reboot.
+[Install]
+WantedBy=multi-user.target
+```
 
-        ```bash
+Then enable and start it:
 
-    sudo nano /etc/systemd/system/frps.service
-    ```
-
-    Add the following:
-
-        ```ini
-
-    [Unit]
-    Description=FRP Server
-    After=network.target
-
-    [Service]
-    ExecStart=/usr/local/bin/frps -c /etc/frp/frps.toml
-    Restart=always
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-
-        ```bash
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable frps
-    sudo systemctl start frps
-    ```
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable frps
+sudo systemctl start frps
+```
 
 ## Step 2: Set up FRP on Raspberry Pi
 
 Next, we need to install the FRP client on the Raspberry Pi to establish a connection with the relay server.
 
-> **Architecture note:** Raspberry Pi 3/4 uses ARM. Download the correct binary for your device:
+> **Architecture note:** Raspberry Pi uses ARM — download the correct binary for your device:
+>
 > - Pi 3 (32-bit): `frp_0.61.1_linux_arm_v7.tar.gz`
 > - Pi 4 / Pi 5 (64-bit): `frp_0.61.1_linux_arm64.tar.gz`
 > - x86 PC/laptop: `frp_0.61.1_linux_amd64.tar.gz`
 
-1.  SSH into the Raspberry Pi and install the FRP client (replace the filename with the correct one for your architecture).
+1. SSH into the Raspberry Pi and install the FRP client (replace the filename with the correct one for your architecture).
 
-        ```bash
+```bash
+sudo apt update
+sudo apt install wget unzip openssh-server -y
+wget https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_arm64.tar.gz
+tar -xvf frp_0.61.1_linux_arm64.tar.gz
+cd frp_0.61.1_linux_arm64
+sudo cp frpc /usr/local/bin
+cd
+sudo rm -rf frp_0.61.1_linux_arm64
+sudo rm frp_0.61.1_linux_arm64.tar.gz
+```
 
-    sudo apt update
-    sudo apt install wget unzip openssh-server -y
-    wget https://github.com/fatedier/frp/releases/download/v0.61.1/frp_0.61.1_linux_arm64.tar.gz
-    tar -xvf frp_0.61.1_linux_arm64.tar.gz
-    cd frp_0.61.1_linux_arm64
-    sudo cp frpc /usr/local/bin
-    cd
-    sudo rm -rf frp_0.61.1_linux_arm64
-    sudo rm frp_0.61.1_linux_arm64.tar.gz
-    ```
+2. Create a configuration file for the FRP client.
 
-2.  Create a configuration file for the FRP client.
+```bash
+sudo mkdir -p /etc/frp
+sudo nano /etc/frp/frpc.toml
+```
 
-        ```bash
+3. Add the following configuration to the file.
 
-    sudo mkdir -p /etc/frp
-    sudo nano /etc/frp/frpc.toml
-    ```
+```toml
+serverAddr = "x.x.x.x"
+serverPort = 7000
+auth.token = "your-secret-token"
 
-3.  Add the following configuration to the file.
+[[proxies]]
+name = "ssh"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 22
+remotePort = 6000
+```
 
-        ```toml
+Replace `x.x.x.x` with the Elastic IP/ DNS name of the relay server, and use the same `auth.token` you set on the server.
 
-    serverAddr = "x.x.x.x"
-    serverPort = 7000
-    auth.token = "your-secret-token"
+4. Start the FRP client.
 
-    [[proxies]]
-    name = "ssh"
-    type = "tcp"
-    localIP = "127.0.0.1"
-    localPort = 22
-    remotePort = 6000
-    ```
+```bash
+frpc -c /etc/frp/frpc.toml
+```
 
-    Replace `x.x.x.x` with the Elastic IP/ DNS name of the relay server, and use the same `auth.token` you set on the server.
+![Connection Success Client To Relay Server](/assets/images/connection-success-client-to-relay.png)
+_Connection Success Client To Relay Server_
 
-4.  Start the FRP client.
+5. Set up FRP client as a systemd service so it reconnects automatically on reboot.
 
-        ```bash
+```bash
+sudo nano /etc/systemd/system/frpc.service
+```
 
-    frpc -c /etc/frp/frpc.toml
-    ```
+Add the following:
 
-    ![Connection Success Client To Relay Server](/assets/images/connection-success-client-to-relay.png)
-    *Connection Success Client To Relay Server*
+```ini
+[Unit]
+Description=FRP Client
+After=network.target
 
-5.  Set up FRP client as a systemd service so it reconnects automatically on reboot.
+[Service]
+ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
+Restart=always
 
-        ```bash
+[Install]
+WantedBy=multi-user.target
+```
 
-    sudo nano /etc/systemd/system/frpc.service
-    ```
+Then enable and start it:
 
-    Add the following:
-
-        ```ini
-
-    [Unit]
-    Description=FRP Client
-    After=network.target
-
-    [Service]
-    ExecStart=/usr/local/bin/frpc -c /etc/frp/frpc.toml
-    Restart=always
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-
-        ```bash
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable frpc
-    sudo systemctl start frpc
-    ```
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable frpc
+sudo systemctl start frpc
+```
 
 ## Step 3: SSH into the Raspberry Pi
 
@@ -208,11 +198,13 @@ ssh -p 6000 pi@x.x.x.x
 
 Replace `pi` with the username of your Raspberry Pi and `x.x.x.x` with the Elastic IP of the relay server.
 
+And that's it! You now have a Raspberry Pi accessible from anywhere on the internet without port forwarding.
+
 ## Troubleshooting
 
-- **Wrong architecture binary:** If `frpc` or `frps` exits immediately, you likely downloaded the wrong architecture. Check with `uname -m` and download the matching binary.
+- **Wrong architecture binary:** If `frpc` or `frps` exits immediately, you likely downloaded the wrong binary. Check with `uname -m` and download the matching one.
 - **Connection refused on port 6000/7000:** Verify the AWS security group inbound rules and UFW rules are configured correctly.
-- **Auth token mismatch:** If the client logs show an auth error, ensure `auth.token` is identical in both `frps.toml` and `frpc.toml`.
+- **Auth token mismatch:** Ensure `auth.token` is identical in both `frps.toml` and `frpc.toml`.
 - **SSH permission denied:** Use SSH keys instead of passwords. See the [DigitalOcean SSH key guide](https://www.digitalocean.com/community/tutorials/how-to-set-up-ssh-keys-on-ubuntu-20-04) for setup instructions.
 - **FRP doesn't start after reboot:** Run `sudo systemctl status frpc` (or `frps`) to check the service logs.
 
